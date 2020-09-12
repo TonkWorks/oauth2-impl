@@ -1,0 +1,9 @@
+id: "1"
+secret: "2"
+domain: "3"
+
+
+cert:
+key: 
+ca:
+authURL: 
