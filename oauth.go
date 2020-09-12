@@ -45,14 +45,14 @@ func main() {
 	srv.SetAllowGetAccessRequest(true)
 	srv.SetClientInfoHandler(server.ClientFormHandler)
 
-	srv.SetInternalErrorHandler(func(err error) (re *errors.Response) {
-		log.Println("Internal Error:", err.Error())
-		return
-	})
+	// srv.SetInternalErrorHandler(func(err error) (re *errors.Response) {
+	// 	log.Println("Internal Error:", err.Error())
+	// 	return
+	// })
 
-	srv.SetResponseErrorHandler(func(re *errors.Response) {
-		log.Println("Response Error:", re.Error.Error())
-	})
+	// srv.SetResponseErrorHandler(func(re *errors.Response) {
+	// 	log.Println("Response Error:", re.Error.Error())
+	// })
 
 	http.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
 		err := srv.HandleAuthorizeRequest(w, r)
