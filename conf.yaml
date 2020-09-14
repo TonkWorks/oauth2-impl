@@ -1,6 +1,6 @@
-id: "1"
-secret: "2"
-domain: "3"
+id: "example-app"
+secret: "ZXhhbXBsZS1hcHAtc2VjcmV0"
+domain: "http://supercomputer:5556/dex"
 
 
 cert:

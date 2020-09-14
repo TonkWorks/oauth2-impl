@@ -2,131 +2,125 @@ package main
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
-	"io"
 	"log"
 	"net/http"
+	"fmt"
 	"time"
-
+	"encoding/base64"
+	"crypto/rand"
 	"golang.org/x/oauth2"
-	"golang.org/x/oauth2/clientcredentials"
 )
 
 const (
-	authServerURL = "http://supercomputer:9096"
+	authServerURL = "http://supercomputer:5556/dex"
 )
 
 var (
 	config = oauth2.Config{
-		ClientID:     "1",
-		ClientSecret: "2",
-		Scopes:       []string{"all"},
-		RedirectURL:  "http:/supercomputer:9094/oauth2",
+		ClientID:     "example-app",
+		ClientSecret: "ZXhhbXBsZS1hcHAtc2VjcmV0",
+		Scopes:       []string{"openid"},
+		RedirectURL:  "http://supercomputer:5555/callback",
 		Endpoint: oauth2.Endpoint{
-			AuthURL:  authServerURL + "/authorize",
+			AuthURL:  authServerURL + "/auth",
 			TokenURL: authServerURL + "/token",
 		},
 	}
-	globalToken *oauth2.Token // Non-concurrent security
 )
 
 func main() {
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		u := config.AuthCodeURL("xyz")
-		http.Redirect(w, r, u, http.StatusFound)
+	http.HandleFunc("/login", func(w http.ResponseWriter, r *http.Request) {
+		// We have a jwtCookie!
+		jwtCookie, _ := r.Cookie("jwt")
+		if jwtCookie != nil {
+			data, _ := base64.StdEncoding.DecodeString(jwtCookie.Value)
+			if string(data) != "" {
+				r.Header.Set("Authorization", "Bearer " + string(data))
+				fmt.Fprintf(w, "UserInfo: %s\n", data)
+				return
+			}
+		}
+
+		oauthState := generateStateOauthCookie(w)
+		u := config.AuthCodeURL(oauthState)
+		http.Redirect(w, r, u, http.StatusTemporaryRedirect)
+		return
 	})
 
-	http.HandleFunc("/oauth2", func(w http.ResponseWriter, r *http.Request) {
-		r.ParseForm()
-		state := r.Form.Get("state")
-		if state != "xyz" {
-			http.Error(w, "State invalid", http.StatusBadRequest)
+	http.HandleFunc("/logout", func(w http.ResponseWriter, r *http.Request) {
+		// remove any previous jwt cookie
+		http.SetCookie(w, &http.Cookie{
+			Name:     "jwt",
+			Expires: time.Unix(0, 0),
+		})
+		fmt.Fprintf(w, "logged out")
+		return
+	})
+
+	http.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+		// remove any previous jwt cookie
+		http.SetCookie(w, &http.Cookie{
+			Name:     "jwt",
+			Expires: time.Unix(0, 0),
+		})
+
+		// Read oauthState from Cookie
+		oauthState, _ := r.Cookie("oauthstate")
+
+		if oauthState == nil || r.FormValue("state") != oauthState.Value {
+			log.Println("invalid oauth google state")
+			http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
 			return
 		}
-		code := r.Form.Get("code")
+
+		code := r.FormValue("code")
 		if code == "" {
 			http.Error(w, "Code not found", http.StatusBadRequest)
 			return
 		}
+
 		token, err := config.Exchange(context.Background(), code)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		globalToken = token
 
-		e := json.NewEncoder(w)
-		e.SetIndent("", "  ")
-		e.Encode(token)
+		rawIDToken, ok := token.Extra("id_token").(string)
+		if !ok {
+			http.Error(w, "no id_token in token response", http.StatusInternalServerError)
+			return
+		}
+
+		// Set The JWT Token.
+		http.SetCookie(w, &http.Cookie{
+			Name:    "jwt",
+			Value:   rawIDToken,
+			// Secure:  false,
+			// HttpOnly: true,
+			// SameSite: http.SameSiteNoneMode,
+			Expires: time.Now().Add(365 * 24 * time.Hour),
+		})
+		http.SetCookie(w, &http.Cookie{
+			Name:     "oauthstate",
+			Expires: time.Unix(0, 0),
+		})
+
+		fmt.Fprintf(w, "UserInfo: %s\n", token)
+		return
 	})
 
-	http.HandleFunc("/refresh", func(w http.ResponseWriter, r *http.Request) {
-		if globalToken == nil {
-			http.Redirect(w, r, "/", http.StatusFound)
-			return
-		}
+	log.Println("Client is running at 5555 port.Please open http://supercomputer:5555")
+	log.Fatal(http.ListenAndServe(":5555", nil))
+}
 
-		globalToken.Expiry = time.Now()
-		token, err := config.TokenSource(context.Background(), globalToken).Token()
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+func generateStateOauthCookie(w http.ResponseWriter) string {
+	var expiration = time.Now().Add(365 * 24 * time.Hour)
 
-		globalToken = token
-		e := json.NewEncoder(w)
-		e.SetIndent("", "  ")
-		e.Encode(token)
-	})
+	b := make([]byte, 16)
+	rand.Read(b)
+	state := base64.URLEncoding.EncodeToString(b)
+	cookie := http.Cookie{Name: "oauthstate", Value: state, Expires: expiration}
+	http.SetCookie(w, &cookie)
 
-	http.HandleFunc("/try", func(w http.ResponseWriter, r *http.Request) {
-		if globalToken == nil {
-			http.Redirect(w, r, "/", http.StatusFound)
-			return
-		}
-
-		resp, err := http.Get(fmt.Sprintf("%s/test?access_token=%s", authServerURL, globalToken.AccessToken))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		defer resp.Body.Close()
-
-		io.Copy(w, resp.Body)
-	})
-
-	http.HandleFunc("/pwd", func(w http.ResponseWriter, r *http.Request) {
-		token, err := config.PasswordCredentialsToken(context.Background(), "test", "test")
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		globalToken = token
-		e := json.NewEncoder(w)
-		e.SetIndent("", "  ")
-		e.Encode(token)
-	})
-
-	http.HandleFunc("/client", func(w http.ResponseWriter, r *http.Request) {
-		cfg := clientcredentials.Config{
-			ClientID:     config.ClientID,
-			ClientSecret: config.ClientSecret,
-			TokenURL:     config.Endpoint.TokenURL,
-		}
-
-		token, err := cfg.Token(context.Background())
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		e := json.NewEncoder(w)
-		e.SetIndent("", "  ")
-		e.Encode(token)
-	})
-
-	log.Println("Client is running at 9094 port.Please open http://supercomputer:9094")
-	log.Fatal(http.ListenAndServe(":9094", nil))
+	return state
 }
